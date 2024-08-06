@@ -1,0 +1,17 @@
+deployment:
+  name: secret-app
+  replicaCount: 1
+  image:
+    app: bitnami-sealed-secrets-workshop
+    version: 0.0.1-SNAPSHOT
+    pullPolicy: IfNotPresent
+
+service:
+  name: secret-app-service
+  type: NodePort
+  port: 8081
+  targetPort: 8080
+  nodePort: 31234
+
+appConfig:
+  appName: secret-app
