@@ -5,6 +5,12 @@ deployment:
     app: bitnami-sealed-secrets-workshop
     version: 0.0.1-SNAPSHOT
     pullPolicy: IfNotPresent
+  env:
+    - name: SECRET_VALUE
+      valueFrom:
+        secretKeyRef:
+          name: my-secret
+          key: secret.value
 
 service:
   name: secret-app-service
