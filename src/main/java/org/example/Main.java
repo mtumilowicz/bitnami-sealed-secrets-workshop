@@ -8,7 +8,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class Main implements CommandLineRunner {
 
-    @Value("${secret.value:No secret found}")
+    @Value("${SECRET_VALUE:No secret found}")
     private String secret;
 
     public static void main(String[] args) {
