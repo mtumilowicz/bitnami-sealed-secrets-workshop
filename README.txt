@@ -27,12 +27,23 @@
         1. store the master.key file somewhere safe (secure vault)
     * Use Vault to securely store the master.key
     * The Sealed Secrets controller in the Sealed Secrets ecosystem is responsible for watching for Sealed Secret custom resources. When it detects one, it decrypts the enclosed secret using its private key and then creates a standard Kubernetes Secret.
-    * There are 3 types of scopes in Sealed Secrets:
-        * The scope is nothing but the context or visibility of a sealed secret within a Kubernetes cluster.
-        * Scope Type	Description
-          strict	The name and namespace of the secret are included in the encrypted data. Therefore, you must seal the secret using the same name and namespace.
-          namespace-wide	You can freely rename the sealed secret within a given namespace.
-          cluster-wide	You have the flexibility to unseal the secret using any name and in any namespace.
+    * Encrypted SealedSecret resources are designed to be safe to be looked at without gaining any knowledge about the secrets it conceals.
+        * This implies that we cannot allow users to read a SealedSecret meant for a namespace they wouldn't have access to and just push a copy of it in a namespace where they can read secrets from.
+        * Sealed-secrets thus behaves as if each namespace had its own independent encryption key and thus once you seal a secret for a namespace, it cannot be moved in another namespace and decrypted there.
+            * We don't technically use an independent private key for each namespace, but instead we include the namespace name during the encryption process, effectively achieving the same result.
+    * Furthermore, namespaces are not the only level at which RBAC configurations can decide who can see which secret.
+        * In fact, it's possible that users can access a secret called foo in a given namespace but not any other secret in the same namespace.
+        * We cannot thus by default let users freely rename SealedSecret resources otherwise a malicious user would be able to decrypt any SealedSecret for that namespace by just renaming it to overwrite the one secret user does have access to.
+            * We use the same mechanism used to include the namespace in the encryption key to also include the secret name.
+        * You might have a use case for moving a sealed secret to other namespaces (e.g. you might not know the namespace name upfront), or you might not know the name of the secret (e.g. it could contain a unique suffix based on the hash of the contents etc).
+                    * The scope is nothing but the context or visibility of a sealed secret within a Kubernetes cluster.
+                    * There are 3 types of scopes in Sealed Secrets:
+                        * Scope Type	Description
+                          strict	The name and namespace of the secret are included in the encrypted data. Therefore, you must seal the secret using the same name and namespace.
+                          namespace-wide	You can freely rename the sealed secret within a given namespace.
+                          cluster-wide	You have the flexibility to unseal the secret using any name and in any namespace.
+    * SealedSecrets are from the POV of an end user a "write only" device.
+        * The idea is that the SealedSecret can be decrypted only by the controller running in the target cluster and nobody else (not even the original author) is able to obtain the original Secret from the SealedSecret.
     * How Sealed Secrets Work:
       A Sealed Secrets Controller is deployed in the Kubernetes cluster.
       Users encrypt their Secret into a SealedSecret using kubeseal and the controller's public key.
@@ -51,9 +62,8 @@
         1. Writes the SealedSecret to a File: The encrypted SealedSecret is then written to the mysql-sealedsecret.yaml file. This file can be applied to your Kubernetes cluster using kubectl apply, similar to how you would deploy other Kubernetes resources.
     * encrypted secrets can be safely versioned and shared, with decryption only possible within the cluster by the Sealed Secrets controller
     * Updating Sealed Secrets
-        * To update a Sealed Secret, you must re-encrypt and apply the new Sealed Secret.
-        * There’s no direct update operation due to the one-way nature of encryption
-        * do your needed changes in the original secret YAML file, then re-generate the sealed secret out of it again using a command similar to the following
+        * If you want to add or update existing sealed secrets without having the cleartext for the other items, you can just copy&paste the new encrypted data items and merge it into an existing sealed secret.
+        * You can use the --merge-into command to update an existing sealed secrets if you don't want to copy&paste:
     * Getting the Public Key.
         * kubeseal --fetch-cert > mypublickey.pem
     * Backup and Restore.
@@ -61,25 +71,74 @@
         * kubectl apply -f sealed-secrets-key.backup.yaml // To restore, apply your backup key to the cluster:
     * Viewing Encrypted Data.
         * Directly viewing encrypted data within a Sealed Secret is not possible due to its encrypted nature.
+    * An alternative workflow is to store the certificate somewhere (e.g. local disk) with kubeseal --fetch-cert >mycert.pem, and use it offline with kubeseal --cert mycert.pem. The certificate is also printed to the controller log on startup.
+    * Sealing key renewal
+        * are automatically renewed every 30 days
+        * Sealed secrets are not automatically rotated and old keys are not deleted when new keys are generated. Old SealedSecret resources can be still decrypted (that's because old sealing keys are not deleted).
+    * User secret rotation
+        * If a sealing key somehow leaks out of the cluster you must consider all your SealedSecret resources encrypted with that key as compromised. No amount of sealing key rotation in the cluster or even re-encryption of existing SealedSecrets files can change that.
+        * The best practice is to periodically rotate all your actual secrets (e.g. change the password) and craft new SealedSecret resources with those new secrets.
 
 * workshop plan
-    1. Install the Sealed Secrets Controller in Your Cluster.
-        * kubectl apply -f https://github.com/bitnami-labs/sealed-secrets/releases/download/v0.26.0/controller.yaml
-    1. You can ensure that the relevant Pod is running as expected by executing the following command:
-        # kubectl get pods -n kube-system | grep sealed-secrets
-    1. Install the kubeseal CLI
-    1. create raw-secrets.yaml file
-        ```
-        apiVersion: v1
-        kind: Secret
-        metadata:
-          name: my-secret
-        type: Opaque
-        data:
-          secret.value: c2VjcmV0dmFsdWU=  # base64 encoded value of 'secretvalue'
-        ```
-    1. transform it into a sealed secret with the help of kubeseal
-        * kubeseal < mysql-secret.yaml > mysql-sealedsecret.yaml
+    * create
+        1. Install the Sealed Secrets Controller in Your Cluster.
+            * kubectl apply -f https://github.com/bitnami-labs/sealed-secrets/releases/download/v0.26.0/controller.yaml
+        1. You can ensure that the relevant Pod is running as expected by executing the following command:
+            # kubectl get pods -n kube-system | grep sealed-secrets
+        1. Install the kubeseal CLI
+            * brew install kubeseal
+        1. create raw-secrets.yaml file
+            ```
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: my-secret
+            type: Opaque
+            data:
+              secret.value: c2VjcmV0dmFsdWU=  # base64 encoded value of 'secretvalue'
+            ```
+        1. verify no secrets
+            * kubectl get secrets --all-namespaces
+            * if some => delete
+                * kubectl delete secret my-secret -n default
+        1. transform it into a sealed secret with the help of kubeseal
+            * kubeseal < raw-secrets.yaml > sealed-secrets.yaml
+        1. create sealed secret
+            * kubectl create -f sealed-secrets.yaml
+            * verify it was created
+                * kubectl get sealedsecrets -n default
+        1. verify that secret resource is created
+            * kubectl get secret my-secret -o yaml
+    * update
+        1. prepare new secret
+            * echo -n "secretvalue1" | base64
+                c2VjcmV0dmFsdWUx
+            ```
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: my-secret
+            type: Opaque
+            data:
+              secret.value: c2VjcmV0dmFsdWUx  # base64 encoded value of 'secretvalue1'
+            ```
+        1. encrypt it
+            kubeseal < raw-secrets.yaml > tmp-sealed.yaml
+        1. edit current sealed secrets
+            * get one: kubectl get sealedsecret my-secret -o yaml > existing-sealedsecret.yaml
+            * add line
+                ```
+                secret.value2: AgAB0pMsRW/efFkcMcYmd9Sjmuen7VLJ0zwR+uktwyQbmu3OKEmTqbFHiqZPXl9y6iApXrWMutzH8owZ/tlcNpcOuF5L7IL4Q7R+bC7GdTEsyq6kltKOFeida1FAZxZm+7QrS6S04dppJ/920PaWJ0uKcQB3dcCXHFZcy+qN2CiZ+kQUeBZKf+e+MBRVk3HWCBO21lQRjN5gFHoEuSD7qsA2jZRMWUjc5Otj+yBFiSijMWwlYTkg4FfizqNgqLBqe1X6fTg9YmUN1dWv7onGhtzdG349GiTTT22jGmEgdY/XqP1TUkIW4URfOKClz83Sz4nQJlxlLJ3q+s1v5+IdC0DWNp3rdIXwGDpqsFDM+MSc90YFhr4pYZNZVwEwiYKcecu2iEStu5BGW06VoXSIZ2l6bEm36FsTTs8nsaXL3cfurz5/O2Q67a04mOHVOse1DAszjj8dSANo3Lchmd00x9cFJfQ178W1N4Cyisi7W4bm05BYy733rjJzsjm+/q8gHfXaQv2v7p5m3BuxmX59aH7JE7OkaDqpaxAnGD/bqP4Jp7cisSLWd+Q6/3lqssaFPJxSZ2gaz+O3R0Ly/jt8M5kgfHvrxpl1DolJM+C/xNryRdLNeRCwWJu2lxlyf35M1nxyuN4nmvlNpgzqbCQzSt6vjoUbXjActETS91BxLui1hitMzX9mR4Lsomi06LML4Tr5LDbW2qt8ZN7/ag8=
+                ```
+        1. deploy
+            * kubectl apply -f existing-sealedsecret.yaml
+        1. verify changes
+            * kubectl get secret my-secret -o yaml
+            * should contain
+                ```
+                secret.value: c2VjcmV0dmFsdWU=
+                secret.value2: c2VjcmV0dmFsdWUx
+                ```
 
 * GitOps workflow
     * Once the sealed-secrets controller is installed, the admin fetches the public key and shares it with the teams that operate on the fleet clusters via Git.
