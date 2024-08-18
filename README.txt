@@ -1,5 +1,5 @@
-* https://www.hungrycoders.com/blog/understanding-relaxed-binding-in-spring-boot
 
+# bitnami-sealed-secrets-workshop
 * references
     * https://fluxcd.io/flux/guides/sealed-secrets/
     * https://foxutech.medium.com/bitnami-sealed-secrets-kubernetes-secret-management-86c746ef0a79
@@ -8,6 +8,80 @@
     * https://www.civo.com/learn/sealed-secrets-in-git
     * https://medium.com/@abdullah.devops.91/how-to-use-sealed-secrets-in-kubernetes-b6c69c84d1c2
     * https://github.com/bitnami-labs/sealed-secrets
+
+## preface
+* goals of this workshop
+    * understand the problem of secrets in GitOps approach
+    * introduction into Bitnami Sealed Secrets
+        * using kubeseal
+        * k8s configuration
+    * plugging secrets in helm deployments
+* workshop plan
+    1. configuration
+        1. install the sealed secrets controller
+            * latest version: https://github.com/bitnami-labs/sealed-secrets/tags
+            * `kubectl apply -f https://github.com/bitnami-labs/sealed-secrets/releases/download/v0.27.1/controller.yaml`
+        1. verify relevant Pod is running
+            * `kubectl get pods -n kube-system | grep sealed-secrets`
+        1. install kubeseal CLI
+            * `brew install kubeseal`
+    1. deploying secrets
+        1. verify secret is not yet created
+            * `kubectl get secrets my-secret`
+                * if created => drop all secrets
+                    * `kubectl delete secrets --all`
+                    * verify once again
+        1. create `raw-secrets.yaml` file
+            ```
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: my-secret
+            type: Opaque
+            data:
+              secret.value: c2VjcmV0dmFsdWU=  # base64 encoded value of 'secretvalue'
+            ```
+        1. seal secret using kubeseal
+            * `kubeseal < raw-secrets.yaml > sealed-secrets.yaml`
+        1. deploy sealed secret
+            1. `kubectl create -f sealed-secrets.yaml`
+            * verify it was created
+                * `kubectl get sealedsecret my-secret -o yaml > existing-sealedsecret.yaml`
+                    * might be securely committed to git
+        1. verify that secret resource is created
+            * `kubectl get secret my-secret -o yaml`
+    * updating
+        1. prepare new secret
+            1. base64 encode some value
+                * `echo -n "secretvalue1" | base64`
+                    * output: `c2VjcmV0dmFsdWUx`
+            1. prepare tmp-raw-secret.yaml
+                ```
+                apiVersion: v1
+                kind: Secret
+                metadata:
+                  name: my-secret
+                type: Opaque
+                data:
+                  secret.value: c2VjcmV0dmFsdWUx  # base64 encoded value of 'secretvalue1'
+                ```
+            1. encrypt it
+                `kubeseal < tmp-raw-secret.yaml > tmp-sealed.yaml`
+        1. edit current sealed secrets
+            * get one: `kubectl get sealedsecret my-secret -o yaml > existing-sealedsecret.yaml`
+            * add line
+                ```
+                secret.value2: AgAB0pMsRW/efFkcMcYmd9Sjmuen7VLJ0zwR+uktwyQbmu3OKEmTqbFHiqZPXl9y6iApXrWMutzH8owZ/tlcNpcOuF5L7IL4Q7R+bC7GdTEsyq6kltKOFeida1FAZxZm+7QrS6S04dppJ/920PaWJ0uKcQB3dcCXHFZcy+qN2CiZ+kQUeBZKf+e+MBRVk3HWCBO21lQRjN5gFHoEuSD7qsA2jZRMWUjc5Otj+yBFiSijMWwlYTkg4FfizqNgqLBqe1X6fTg9YmUN1dWv7onGhtzdG349GiTTT22jGmEgdY/XqP1TUkIW4URfOKClz83Sz4nQJlxlLJ3q+s1v5+IdC0DWNp3rdIXwGDpqsFDM+MSc90YFhr4pYZNZVwEwiYKcecu2iEStu5BGW06VoXSIZ2l6bEm36FsTTs8nsaXL3cfurz5/O2Q67a04mOHVOse1DAszjj8dSANo3Lchmd00x9cFJfQ178W1N4Cyisi7W4bm05BYy733rjJzsjm+/q8gHfXaQv2v7p5m3BuxmX59aH7JE7OkaDqpaxAnGD/bqP4Jp7cisSLWd+Q6/3lqssaFPJxSZ2gaz+O3R0Ly/jt8M5kgfHvrxpl1DolJM+C/xNryRdLNeRCwWJu2lxlyf35M1nxyuN4nmvlNpgzqbCQzSt6vjoUbXjActETS91BxLui1hitMzX9mR4Lsomi06LML4Tr5LDbW2qt8ZN7/ag8=
+                ```
+        1. deploy
+            * `kubectl apply -f existing-sealedsecret.yaml`
+        1. verify changes
+            * `kubectl get secret my-secret -o yaml`
+            * should contain
+                ```
+                secret.value: c2VjcmV0dmFsdWU=
+                secret.value2: c2VjcmV0dmFsdWUx
+                ```
 
 * Bitnami sealed-secrets
     * store secrets safely in a public or private Git repository
@@ -78,67 +152,17 @@
     * User secret rotation
         * If a sealing key somehow leaks out of the cluster you must consider all your SealedSecret resources encrypted with that key as compromised. No amount of sealing key rotation in the cluster or even re-encryption of existing SealedSecrets files can change that.
         * The best practice is to periodically rotate all your actual secrets (e.g. change the password) and craft new SealedSecret resources with those new secrets.
+    * image verification
+        * images are being signed using cosign
+        * signatures have been saved in our GitHub Container Registry
+        * script
+            ```
+            # export the COSIGN_VARIABLE setting up the GitHub container registry signs path
+            export COSIGN_REPOSITORY=ghcr.io/bitnami-labs/sealed-secrets-controller/signs
 
-* workshop plan
-    * create
-        1. Install the Sealed Secrets Controller in Your Cluster.
-            * kubectl apply -f https://github.com/bitnami-labs/sealed-secrets/releases/download/v0.26.0/controller.yaml
-        1. You can ensure that the relevant Pod is running as expected by executing the following command:
-            # kubectl get pods -n kube-system | grep sealed-secrets
-        1. Install the kubeseal CLI
-            * brew install kubeseal
-        1. create raw-secrets.yaml file
+            # verify the image uploaded in Dockerhub
+            cosign verify --key .github/workflows/cosign.pub docker.io/bitnami/sealed-secrets-controller:latest
             ```
-            apiVersion: v1
-            kind: Secret
-            metadata:
-              name: my-secret
-            type: Opaque
-            data:
-              secret.value: c2VjcmV0dmFsdWU=  # base64 encoded value of 'secretvalue'
-            ```
-        1. verify no secrets
-            * kubectl get secrets --all-namespaces
-            * if some => delete
-                * kubectl delete secret my-secret -n default
-        1. transform it into a sealed secret with the help of kubeseal
-            * kubeseal < raw-secrets.yaml > sealed-secrets.yaml
-        1. create sealed secret
-            * kubectl create -f sealed-secrets.yaml
-            * verify it was created
-                * kubectl get sealedsecrets -n default
-        1. verify that secret resource is created
-            * kubectl get secret my-secret -o yaml
-    * update
-        1. prepare new secret
-            * echo -n "secretvalue1" | base64
-                c2VjcmV0dmFsdWUx
-            ```
-            apiVersion: v1
-            kind: Secret
-            metadata:
-              name: my-secret
-            type: Opaque
-            data:
-              secret.value: c2VjcmV0dmFsdWUx  # base64 encoded value of 'secretvalue1'
-            ```
-        1. encrypt it
-            kubeseal < raw-secrets.yaml > tmp-sealed.yaml
-        1. edit current sealed secrets
-            * get one: kubectl get sealedsecret my-secret -o yaml > existing-sealedsecret.yaml
-            * add line
-                ```
-                secret.value2: AgAB0pMsRW/efFkcMcYmd9Sjmuen7VLJ0zwR+uktwyQbmu3OKEmTqbFHiqZPXl9y6iApXrWMutzH8owZ/tlcNpcOuF5L7IL4Q7R+bC7GdTEsyq6kltKOFeida1FAZxZm+7QrS6S04dppJ/920PaWJ0uKcQB3dcCXHFZcy+qN2CiZ+kQUeBZKf+e+MBRVk3HWCBO21lQRjN5gFHoEuSD7qsA2jZRMWUjc5Otj+yBFiSijMWwlYTkg4FfizqNgqLBqe1X6fTg9YmUN1dWv7onGhtzdG349GiTTT22jGmEgdY/XqP1TUkIW4URfOKClz83Sz4nQJlxlLJ3q+s1v5+IdC0DWNp3rdIXwGDpqsFDM+MSc90YFhr4pYZNZVwEwiYKcecu2iEStu5BGW06VoXSIZ2l6bEm36FsTTs8nsaXL3cfurz5/O2Q67a04mOHVOse1DAszjj8dSANo3Lchmd00x9cFJfQ178W1N4Cyisi7W4bm05BYy733rjJzsjm+/q8gHfXaQv2v7p5m3BuxmX59aH7JE7OkaDqpaxAnGD/bqP4Jp7cisSLWd+Q6/3lqssaFPJxSZ2gaz+O3R0Ly/jt8M5kgfHvrxpl1DolJM+C/xNryRdLNeRCwWJu2lxlyf35M1nxyuN4nmvlNpgzqbCQzSt6vjoUbXjActETS91BxLui1hitMzX9mR4Lsomi06LML4Tr5LDbW2qt8ZN7/ag8=
-                ```
-        1. deploy
-            * kubectl apply -f existing-sealedsecret.yaml
-        1. verify changes
-            * kubectl get secret my-secret -o yaml
-            * should contain
-                ```
-                secret.value: c2VjcmV0dmFsdWU=
-                secret.value2: c2VjcmV0dmFsdWUx
-                ```
 
 * GitOps workflow
     * Once the sealed-secrets controller is installed, the admin fetches the public key and shares it with the teams that operate on the fleet clusters via Git.
