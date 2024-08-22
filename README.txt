@@ -109,13 +109,29 @@
 ## Bitnami sealed-secrets
 * aims to solve the "storing secrets in Git" part of the problem
     * using asymmetric crypto encryption
-
 * components
     * kubeseal
         * companion CLI
         * encrypts the Secret using the public key that it fetches at runtime from the controller
             * public key can be stored in git if user does not have direct access to the cluster
                 * `kubeseal --cert mycert.pem`
+            * scopes
+                * nothing but the context or visibility of a sealed secret within a Kubernetes cluster
+                * 3 types
+                    * strict (default)
+                        * namespace name is included during the encryption process
+                            * same result as using an independent private key for each namespace
+                            * secret cannot be moved in another namespace and decrypted there
+                            * sometimes there is case for moving a sealed secret to other namespaces
+                                * example: target namespace is not known upfront
+                        * secret name is included during the encryption process
+                            * same mechanism as with namespaces
+                            * otherwise malicious user could potentially rename a SealedSecret to match the name of another secret they have access to
+                            * sometimes name of the secret is not known upfront
+                    * namespace-wide
+                        * freely rename the sealed secret within a given namespace
+                    * cluster-wide
+                        * flexibility to unseal the secret using any name and in any namespace
         * example: `kubeseal < mysql-secret.yaml > mysql-sealedsecret.yaml`
             1. reads the Secret from a file
                 * takes the `mysql-secret.yaml` file as input
@@ -127,7 +143,7 @@
                 * output of the encryption process is a new Kubernetes resource of kind SealedSecret
             1. writes the SealedSecret to a file
                 * written to the `mysql-sealedsecret.yaml` file
-                    * can be applied to Kubernetes cluster using `kubectl apply`
+            1. `kubectl apply` to deploy it
     * sealed-secrets controller
         * generates a 4096-bit RSA key pair and persists the private and public keys as Kubernetes secrets
         * responsible for watching for Sealed Secret custom resources
@@ -164,23 +180,6 @@
             * best practice:periodically rotate all secrets (e.g. change the password)
     * public key
         * retrieve: `kubeseal --fetch-cert > public-key-cert.pem`
-
-
-
-    * This implies that we cannot allow users to read a SealedSecret meant for a namespace they wouldn't have access to and just push a copy of it in a namespace where they can read secrets from.
-    * Sealed-secrets thus behaves as if each namespace had its own independent encryption key and thus once you seal a secret for a namespace, it cannot be moved in another namespace and decrypted there.
-        * We don't technically use an independent private key for each namespace, but instead we include the namespace name during the encryption process, effectively achieving the same result.
-* Furthermore, namespaces are not the only level at which RBAC configurations can decide who can see which secret.
-    * In fact, it's possible that users can access a secret called foo in a given namespace but not any other secret in the same namespace.
-    * We cannot thus by default let users freely rename SealedSecret resources otherwise a malicious user would be able to decrypt any SealedSecret for that namespace by just renaming it to overwrite the one secret user does have access to.
-        * We use the same mechanism used to include the namespace in the encryption key to also include the secret name.
-    * You might have a use case for moving a sealed secret to other namespaces (e.g. you might not know the namespace name upfront), or you might not know the name of the secret (e.g. it could contain a unique suffix based on the hash of the contents etc).
-                * The scope is nothing but the context or visibility of a sealed secret within a Kubernetes cluster.
-                * There are 3 types of scopes in Sealed Secrets:
-                    * Scope Type	Description
-                      strict	The name and namespace of the secret are included in the encrypted data. Therefore, you must seal the secret using the same name and namespace.
-                      namespace-wide	You can freely rename the sealed secret within a given namespace.
-                      cluster-wide	You have the flexibility to unseal the secret using any name and in any namespace.
 * image verification
     * images are being signed using cosign
     * signatures have been saved in GitHub Container Registry
