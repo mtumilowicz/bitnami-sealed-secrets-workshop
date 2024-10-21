@@ -3,7 +3,7 @@
 
 # bitnami-sealed-secrets-workshop
 * references
-    * https://fluxcd.io/flux/guides/sealed-secrets/
+    * https://fluxcd.io/flux/guides/sealed-secrets/ 
     * https://foxutech.medium.com/bitnami-sealed-secrets-kubernetes-secret-management-86c746ef0a79
     * https://www.digitalocean.com/community/developer-center/how-to-encrypt-kubernetes-secrets-using-sealed-secrets-in-doks
     * https://chatgpt.com/
